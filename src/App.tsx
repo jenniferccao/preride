@@ -36,17 +36,12 @@ function sampleRoutePoints(coords: number[][], n: number): { lat: number; lon: n
   });
 }
 
-// ─── Arrow grid config ─────────────────────────────────────────────────────
-const ARROW_COLS = 6;   // per-viewport grid columns
-const ARROW_ROWS = 4;   // per-viewport grid rows
-const ARROW_CONCURRENCY = 3;   // max simultaneous Open-Meteo requests
+// ─── Arrow grid config ────────────────────────────────────────────────────
+const ARROW_COLS = 6;
+const ARROW_ROWS = 4;
+const ARROW_CONCURRENCY = 3;
 
 // ─── Arrow icon ───────────────────────────────────────────────────────────────
-/**
- * Draw a solid-color arrow and return it as ImageData for map.addImage.
- * We avoid SDF mode (unreliable across Mapbox GL JS versions) and draw
- * the color directly so the icon is always visible.
- */
 function createArrowImage(size = 40): { width: number; height: number; data: Uint8ClampedArray } {
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -54,25 +49,21 @@ function createArrowImage(size = 40): { width: number; height: number; data: Uin
   const ctx = canvas.getContext('2d')!;
   const cx = size / 2;
 
-  // Outer glow / drop-shadow for visibility on satellite imagery
   ctx.shadowColor = 'rgba(0,0,0,0.6)';
   ctx.shadowBlur = 4;
+  ctx.fillStyle = '#e64a6cff';
 
-  ctx.fillStyle = '#e64a6cff'; // sky-blue
-
-  // Arrow shape: head (wide triangle) + tail (narrow shaft)
   ctx.beginPath();
-  ctx.moveTo(cx, 3);           // tip
-  ctx.lineTo(cx + 9, 18);           // right wing
-  ctx.lineTo(cx + 3, 15);           // inner right
-  ctx.lineTo(cx + 3, size - 3);     // bottom right
-  ctx.lineTo(cx - 3, size - 3);     // bottom left
-  ctx.lineTo(cx - 3, 15);           // inner left
-  ctx.lineTo(cx - 9, 18);           // left wing
+  ctx.moveTo(cx, 3);
+  ctx.lineTo(cx + 9, 18);
+  ctx.lineTo(cx + 3, 15);
+  ctx.lineTo(cx + 3, size - 3);
+  ctx.lineTo(cx - 3, size - 3);
+  ctx.lineTo(cx - 3, 15);
+  ctx.lineTo(cx - 9, 18);
   ctx.closePath();
   ctx.fill();
 
-  // White outline for contrast against satellite imagery
   ctx.shadowBlur = 0;
   ctx.strokeStyle = 'rgba(255,255,255,0.85)';
   ctx.lineWidth = 1.5;
@@ -82,9 +73,8 @@ function createArrowImage(size = 40): { width: number; height: number; data: Uin
   return { width: size, height: size, data: imageData.data };
 }
 
-// ─── Bearing, distance & headwind math ──────────────────────────────────────
+// ─── Bearing, distance & headwind math ───────────────────────────────────────
 
-/** Great-circle bearing from point A → point B, in degrees 0-360. */
 function computeBearing(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const dLng = toRad(lng2 - lng1);
@@ -95,23 +85,16 @@ function computeBearing(lat1: number, lng1: number, lat2: number, lng2: number):
   return (Math.atan2(y, x) * (180 / Math.PI) + 360) % 360;
 }
 
-/** Smallest unsigned angle (0-180°) between two bearings. */
 function smallestAngle(a: number, b: number): number {
   const d = Math.abs(a - b) % 360;
   return d > 180 ? 360 - d : d;
 }
 
-/**
- * Headwind component for a segment with the given travel bearing.
- *   windFromDeg = meteorological "from" direction (0° = from north).
- *   Positive return = headwind, negative = tailwind.
- */
 function headwindComponent(bearing: number, windFromDeg: number, windSpeedKmh: number): number {
   const theta = smallestAngle(bearing, windFromDeg);
   return windSpeedKmh * Math.cos((theta * Math.PI) / 180);
 }
 
-/** Haversine distance between two lat/lng points, in metres. */
 function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6_371_000;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -123,23 +106,17 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/**
- * Parse a GPX file text into a [lng, lat] coordinate array.
- * Picks the largest track-segment by point count.
- * Throws a user-readable Error on failure.
- */
+// ─── GPX parser ───────────────────────────────────────────────────────────────
 function parseGpx(text: string): number[][] {
   const doc = new DOMParser().parseFromString(text, 'application/xml');
   if (doc.querySelector('parsererror')) throw new Error('Invalid XML — file may not be a GPX');
 
-  // Collect all trkpts from all tracks (prefer <trk>/<trkseg>/<trkpt>)
   const trkpts = Array.from(doc.querySelectorAll('trkpt'));
   const rtepts = trkpts.length === 0 ? Array.from(doc.querySelectorAll('rtept')) : [];
   const allPts = trkpts.length > 0 ? trkpts : rtepts;
 
   if (allPts.length === 0) throw new Error('No track or route points found in GPX');
 
-  // If multiple <trk> blocks, group per-track and pick the largest
   const tracks = Array.from(doc.querySelectorAll('trk'));
   let chosenPts: Element[] = allPts;
   if (tracks.length > 1) {
@@ -159,7 +136,6 @@ function parseGpx(text: string): number[][] {
   return coords;
 }
 
-/** Index of the nearest sample point to a given segment midpoint. */
 function nearestSampleIndex(
   midLat: number,
   midLng: number,
@@ -174,36 +150,17 @@ function nearestSampleIndex(
   return best;
 }
 
-/**
- * Build GeoJSON FeatureCollection for the route with per-segment suffer scores.
- *
- * Suffer score formula (when includeElevation = true):
- *   sufferRaw = max(0, headwind_kmh) + K * max(0, grade)
- *
- * K = 40: wind is in km/h; a 10% (0.10) grade adds 4 km/h-equivalent effort.
- * This makes a steep road (≥8% grade) clearly visible even against sub-5 km/h headwind,
- * while still letting strong headwinds dominate on flat terrain.
- *
- * grade = (elevB - elevA) / segmentDistanceMeters, clamped to [-0.2, 0.2].
- * Only uphill (positive grade) contributes; descents are free.
- *
- * Scores are normalised to 0..1 across all segments for colour-mapping.
- */
+// ─── Segment collection builder ───────────────────────────────────────────────
 const CLIMB_K = 600;
-const GRADE_CLAMP = 0.5; // ±20% max grade before clamping
+const GRADE_CLAMP = 0.5;
 const OFFSET_METERS = 5;
 
-// Simple flat-earth approximation for small offsets
 function offsetPoint(lat: number, lon: number, bearingDeg: number, distMeters: number): [number, number] {
   const perpRad = ((bearingDeg + 90) * Math.PI) / 180;
-  // dy is north/south change in meters
-  // dx is east/west change in meters
   const dy = distMeters * Math.cos(perpRad);
   const dx = distMeters * Math.sin(perpRad);
-
   const latOffset = dy / 111111;
   const lonOffset = dx / (111111 * Math.cos((lat * Math.PI) / 180));
-
   return [lon + lonOffset, lat + latOffset];
 }
 
@@ -220,11 +177,9 @@ function buildSegmentCollection(
 
   const hasElev = includeElevation && elevations.length === coords.length;
 
-  // Pre-pass: Count traversals per undirected edge to detect overlaps
+  // ── Edge-overlap detection (for bidirectional paths) ─────────────────────
   const edgeCounts = new Map<string, number>();
-  // Key generator: sorted endpoints to be direction-agnostic
   const getEdgeKey = (p1: number[], p2: number[]) => {
-    // Round to 5 decimals to fuzz match
     const k1 = `${p1[1].toFixed(5)},${p1[0].toFixed(5)}`;
     const k2 = `${p2[1].toFixed(5)},${p2[0].toFixed(5)}`;
     return k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
@@ -237,9 +192,9 @@ function buildSegmentCollection(
 
   const edgeVisited = new Map<string, number>();
 
-  // Main pass: compute values and apply offsets
+  // ── Per-segment scoring pass ──────────────────────────────────────────────
   const segmentData: (DebugSegmentStats & {
-    coords: number[][]; // [start, end]
+    coords: number[][];
   })[] = [];
 
   for (let i = 0; i < coords.length - 1; i++) {
@@ -269,7 +224,7 @@ function buildSegmentCollection(
           grade = g;
           climbPenalty = CLIMB_K * grade;
         } else {
-          grade = g; // keep negative grade for debug info, but climbPenalty stays 0
+          grade = g;
         }
       }
     }
@@ -284,11 +239,7 @@ function buildSegmentCollection(
     if (totalVisits > 1) {
       const visitsSoFar = edgeVisited.get(edgeKey) || 0;
       edgeVisited.set(edgeKey, visitsSoFar + 1);
-
-      // First traversal = Offset +1 (Forward), Second = Offset -1 (Reverse)
-      // Note: We use +1 for first encounter. 
       const sign = visitsSoFar === 0 ? 1 : -1;
-
       const p1 = offsetPoint(lat1, lng1, bearing, sign * OFFSET_METERS);
       const p2 = offsetPoint(lat2, lng2, bearing, sign * OFFSET_METERS);
       finalCoords = [p1, p2];
@@ -299,12 +250,12 @@ function buildSegmentCollection(
       grade,
       climbPenalty,
       sufferRaw,
-      totalScore: 0, // placeholder, computed after maxRaw
+      totalScore: 0,
       coords: finalCoords,
     });
   }
 
-  // Normalise to 0..1
+  // ── Normalise scores to 0..1 ──────────────────────────────────────────────
   const raws = segmentData.map(s => s.sufferRaw);
   const maxRaw = Math.max(...raws, 1e-6);
 
@@ -408,12 +359,7 @@ function App() {
   // We can add a state for it or compute it when sampleElevations runs.
   const [totalAscent, setTotalAscent] = useState(0);
 
-  useEffect(() => {
-    // Re-calculate ascent whenever route changes (and elevations are fetched)
-    // This will be triggered by sampleElevations basically
-  }, [routeCoords]);
-
-  // ── Async function: fetch missing arrow points and update source ───────────────────────
+  // ── Wind arrows: fetch & update source ───────────────────────────────────
   const refreshArrows = useCallback(async () => {
     const m = map.current;
     const src = m?.getSource(WIND_ARROWS_SOURCE) as mapboxgl.GeoJSONSource | undefined;
@@ -426,20 +372,18 @@ function App() {
     arrowGridRef.current = pts;
     const grid = arrowGridRef.current;
 
-    // 1. Fetch data for visible grid points (cached by lat/lon/date)
     await pooled(
       grid.map((p) => () => loadArrowPoint(p.lat, p.lng, fetchedDate)),
       ARROW_CONCURRENCY
     );
 
-    // 2. Build GeoJSON from cache (using fetchedDate)
     const geojson = buildArrowsGeoJSON(grid, fetchedDate, hourIndexRef.current);
     src.setData(geojson);
 
     if (m.getLayer(WIND_ARROWS_LAYER)) {
       m.setLayoutProperty(WIND_ARROWS_LAYER, 'visibility', 'visible');
     }
-  }, [windOn, fetchedDate]); // Added fetchedDate to trigger refresh
+  }, [windOn, fetchedDate]);
 
   const [mapStyle, setMapStyle] = useState<'satellite' | 'streets'>('satellite');
 
@@ -497,7 +441,6 @@ function App() {
     }
   }, [routeCoords, samplePoints]);
 
-  // Keep ref up to date so event handlers always call the latest version
   refreshArrowsRef.current = refreshArrows;
 
   // ── Default GPX route load ────────────────────────────────────────────────
@@ -513,7 +456,6 @@ function App() {
       })
       .catch((err) => {
         console.error('[DefaultRoute] Failed to load default_route.gpx:', err);
-        // Fall back to empty state — no silent fallback to old route
         setRouteCoords([]);
       });
   }, []);
@@ -523,7 +465,7 @@ function App() {
     const m = map.current;
     if (!m || !mapReady) return;
 
-    // Clean up old markers
+    // Remove previous markers
     startMarkerRef.current?.remove();
     finishMarkerRef.current?.remove();
     startMarkerRef.current = null;
@@ -574,7 +516,7 @@ function App() {
 
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/satellite-streets-v12', // Start with satellite
+        style: 'mapbox://styles/mapbox/satellite-streets-v12',
         center: [-79.3832, 43.6532],
         zoom: 10,
         pitch: 45,
@@ -587,7 +529,7 @@ function App() {
         initializeLayers(m);
         setMapReady(true);
 
-        // ── Debug hover on route line ─────────────────────────────────────────
+        // ── Route hover: show debug stats panel ───────────────────────────
         m.on('mousemove', ROUTE_LAYER_ID, (e) => {
           if (!e.features || e.features.length === 0) return;
           const props = e.features[0].properties;
@@ -613,11 +555,10 @@ function App() {
         });
       });
 
-      // ── moveend + zoomend: spatial wind re-fetch  ────────────────────────
+      // ── Pan/zoom: re-fetch wind arrows for new viewport ─────────────────
       const onViewChanged = () => { void refreshArrowsRef.current(); };
       map.current.on('moveend', onViewChanged);
       map.current.on('zoomend', onViewChanged);
-
 
     } catch (err) {
       console.error('Error initialising map:', err);
@@ -628,9 +569,9 @@ function App() {
       map.current?.remove();
       map.current = null;
     };
-  }, []); // Run once
+  }, []);
 
-  // ── Style Switching ───────────────────────────────────────────────────────
+  // ── Style switching ───────────────────────────────────────────────────────
   const handleSetMapStyle = (style: 'satellite' | 'streets') => {
     const m = map.current;
     if (!m) return;
@@ -643,17 +584,7 @@ function App() {
 
     m.setStyle(url);
     m.once('style.load', () => {
-      // Re-add layers after style switch
       initializeLayers(m);
-      // Trigger terrain/wind refresh by toggling state or relying on effects
-      // Actually, effects will re-run if we depend on mapStyle or just because source is missing.
-      // But explicit re-enable helps.
-      if (terrainOn) {
-        // terrain source needs re-adding?
-        // simple enableTerrain() check should work if invoked
-        // Effect [mapReady, terrainOn] might not re-run if those didn't change.
-        // So we add mapStyle to that effect dependency.
-      }
     });
   };
 
@@ -697,21 +628,14 @@ function App() {
   useEffect(() => {
     if (!mapReady) return;
     if (terrainOn) enableTerrain(); else disableTerrain();
-  }, [mapReady, terrainOn, enableTerrain, disableTerrain, mapStyle]); // Re-run on style change
+  }, [mapReady, terrainOn, enableTerrain, disableTerrain, mapStyle]);
 
-  // ── Sample elevations after map is idle (terrain tiles fully loaded) ─────
-  // BUG FIX: queryTerrainElevation returns 0/null until the DEM raster tiles
-  // covering the route viewport are fetched. Calling it synchronously right
-  // after setTerrain() (or mapReady) means tiles haven't arrived yet.
-  // Solution: schedule sampling in a one-shot 'idle' listener so we only
-  // sample once the map has finished loading all pending tiles.
+  // ── Elevation sampling (waits for DEM tiles to load) ─────────────────────
   useEffect(() => {
     const m = map.current;
     if (!m || !mapReady || routeCoords.length < 2) return;
 
-    // Step 2: DEM source guard
     if (!m.getSource(DEM_SOURCE_ID)) {
-      // console.error('[Elevation] DEM source missing — attempting to add it');
       try {
         m.addSource(DEM_SOURCE_ID, {
           type: 'raster-dem',
@@ -722,19 +646,16 @@ function App() {
       } catch (_) { /* already exists */ }
     }
 
-    // Ensure terrain is set so DEM tiles start loading
     if (!m.getTerrain()) {
-      // console.warn('[Elevation] Terrain not active — forcing setTerrain for elevation sampling');
       m.setTerrain({ source: DEM_SOURCE_ID, exaggeration: 1 });
     }
 
     const doSample = () => {
       const elevs = sampleElevations(m, routeCoords);
       cachedElevationsRef.current = elevs;
-      // Force recolor with fresh elevations
       const src = m.getSource(ROUTE_SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
       if (src) {
-        // Calculate total ascent
+        // ── Compute total ascent ──────────────────────────────────────────
         let ascent = 0;
         for (let i = 0; i < elevs.length - 1; i++) {
           const diff = elevs[i + 1] - elevs[i];
@@ -751,8 +672,6 @@ function App() {
       }
     };
 
-    // If map is already idle (all tiles loaded), sample immediately;
-    // otherwise wait for the next idle event so DEM tiles are ready.
     if (m.loaded()) {
       doSample();
     } else {
@@ -763,9 +682,9 @@ function App() {
       m.off('idle', doSample);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, routeCoords, terrainOn, mapStyle]); // terrainOn: re-sample after terrain toggled
+  }, [mapReady, routeCoords, terrainOn, mapStyle]);
 
-  // ── Recolor route on wind data, hour, route change, or elevation toggle ──
+  // ── Recolor route ─────────────────────────────────────────────────────────
   useEffect(() => {
     const m = map.current;
     if (!m || !mapReady) return;
@@ -779,10 +698,10 @@ function App() {
     );
   }, [
     mapReady, allData, hourIndex, routeCoords, samplePoints,
-    elevationOn, windOn, mapStyle // ensure persistence
+    elevationOn, windOn, mapStyle,
   ]);
 
-  // ── Auto-zoom when route changes (GPX upload) ─────────────────────────────
+  // ── Auto-zoom on route change ─────────────────────────────────────────────
   useEffect(() => {
     const m = map.current;
     if (!m || !mapReady || routeCoords.length < 2) return;
@@ -837,11 +756,10 @@ function App() {
       m.setLayoutProperty(WIND_ARROWS_LAYER, 'visibility', 'visible');
     }
 
-    // Fetch + render for current viewport
     void refreshArrows();
-  }, [mapReady, windOn, refreshArrows, mapStyle]); // Re-add layer if lost on style switch
+  }, [mapReady, windOn, refreshArrows, mapStyle]);
 
-  // ── Slider change: rebuild from cache (no network) ────────────────────────
+  // ── Wind slider: rebuild from cache ──────────────────────────────────────
   useEffect(() => {
     const m = map.current;
     if (!m || !mapReady || !windOn || arrowGridRef.current.length === 0) return;
@@ -850,12 +768,12 @@ function App() {
     src.setData(buildArrowsGeoJSON(arrowGridRef.current, fetchedDate, hourIndex));
   }, [mapReady, windOn, hourIndex, fetchedDate, mapStyle]);
 
-  // ── GPX upload ────────────────────────────────────────────────────────────
+  // ── GPX upload handler ────────────────────────────────────────────────────
   const handleGpxUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    e.target.value = ''; // allow re-upload of the same file
-    setSelectedFile(file); // Store the file object
+    e.target.value = '';
+    setSelectedFile(file);
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
