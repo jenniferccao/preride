@@ -11,7 +11,7 @@
  * the fallback elevation is 0 m, so grade = 0 everywhere and the scoring
  * degenerates gracefully to wind-only mode.
  */
-import type mapboxgl from 'mapbox-gl';
+
 
 /** Cache key rounded to 5 decimal places (~1 m precision). */
 export function elevationKey(lat: number, lng: number): string {

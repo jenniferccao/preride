@@ -4,7 +4,7 @@
  * Cache strategy: "lat2dec,lng2dec" → 24-entry hourly array.
  * A single fetch covers all 24 hours, so time-slider changes cost 0 network requests.
  */
-import type mapboxgl from 'mapbox-gl';
+
 
 export interface ArrowWindEntry {
     speed_kmh: number;
