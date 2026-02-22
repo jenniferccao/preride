@@ -14,6 +14,7 @@ import RouteDebugPanel from './components/RouteDebugPanel';
 import type { DebugSegmentStats } from './components/RouteDebugPanel';
 import SettingsPanel from './components/SettingsPanel';
 import UploadPanel from './components/UploadPanel';
+import OnboardingOverlay from './components/OnboardingOverlay';
 
 
 // ─── Map layer IDs ────────────────────────────────────────────────────────────
@@ -28,8 +29,8 @@ const ARROW_IMAGE_ID = 'wind-arrow-icon';
 
 const ROUTE_OUTLINE_LAYER_ID_P2 = 'route-outline-p2';
 const ROUTE_LAYER_ID_P2 = 'route-line-p2';
-const ROUTE_INTERACT_SOURCE_ID = 'route-interact';
-const ROUTE_INTERACT_LAYER_ID = 'route-interact-layer';
+const ROUTE_HITBOX_LAYER_ID = 'route-hitbox';
+const ROUTE_HITBOX_LAYER_ID_P2 = 'route-hitbox-p2';
 
 /** Pick n evenly-spaced points along the route for wind sampling. */
 function sampleRoutePoints(coords: number[][], n: number): { lat: number; lon: number }[] {
@@ -281,6 +282,20 @@ function App() {
   const [elevationOn, setElevationOn] = useState(true);
   const [mapReady, setMapReady] = useState(false);
 
+  // Loading screen states
+  const [appReady, setAppReady] = useState(false);
+  const [hideLoadingScreen, setHideLoadingScreen] = useState(false);
+
+  // Onboarding state
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // Lazily initialize onboarding state once on mount
+  useEffect(() => {
+    if (localStorage.getItem('preride_onboarding_seen') !== 'true') {
+      setShowOnboarding(true);
+    }
+  }, []);
+
   useEffect(() => {
     const handleRateLimit = (e: Event) => {
       const isLimited = (e as CustomEvent).detail;
@@ -337,6 +352,38 @@ function App() {
   // Refetches when fetchedDate changes (Manual Fetch)
   const { allData, loading: windLoading } = useMultiPointWindData(samplePoints, fetchedDate);
 
+  // ── Application Ready Logic ───────────────────────────────────────────────
+  useEffect(() => {
+    if (appReady) return;
+
+    // We consider the app "ready" when:
+    // 1. The map style is loaded (mapReady is true)
+    // 2. We have route points loaded
+    // 3. We are no longer waiting for the initial wind data fetch
+    if (mapReady && routeCoords.length > 0 && !windLoading) {
+      setAppReady(true);
+    }
+  }, [mapReady, routeCoords.length, windLoading, appReady]);
+
+  // Fallback timeout to guarantee the loading screen disappears
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!appReady) {
+        setAppReady(true);
+      }
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [appReady]);
+
+  // Fade out effect duration handling
+  useEffect(() => {
+    if (appReady) {
+      const timer = setTimeout(() => {
+        setHideLoadingScreen(true);
+      }, 500); // Wait 500ms for CSS fade to finish before unmounting
+      return () => clearTimeout(timer);
+    }
+  }, [appReady]);
 
   // Refs used inside event handlers (avoids stale closures)
   const windOnRef = useRef(windOn);
@@ -393,14 +440,7 @@ function App() {
 
   const [mapStyle, setMapStyle] = useState<'satellite' | 'streets'>('satellite');
 
-  // Update logo image and blend mode based on current map style
-  useEffect(() => {
-    const logo = document.querySelector('img[alt="PreRide Logo"]') as HTMLImageElement | null;
-    if (logo) {
-      logo.src = mapStyle === 'satellite' ? '/textlogo_white.png' : '/textlogo.png';
-      logo.style.mixBlendMode = mapStyle === 'satellite' ? 'screen' : 'multiply';
-    }
-  }, [mapStyle]);
+
 
   // ── Layer Initialisation (reusable for style switches) ────────────────────
   const initializeLayers = useCallback((m: mapboxgl.Map) => {
@@ -500,20 +540,37 @@ function App() {
       m.setFilter(ROUTE_LAYER_ID, ['==', ['get', 'passIndex'], 0]);
     }
 
-    // 7. Invisible interaction layer on top — full continuous route for hover hit-testing
-    if (!m.getSource(ROUTE_INTERACT_SOURCE_ID)) {
-      m.addSource(ROUTE_INTERACT_SOURCE_ID, {
-        type: 'geojson',
-        data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } },
+    // 7. Hitboxes for interaction (invisible, wider stroke)
+    const hitlineWidth: mapboxgl.Expression = [
+      'interpolate', ['exponential', 1.5], ['zoom'],
+      10, 15,
+      18, 40
+    ];
+
+    if (!m.getLayer(ROUTE_HITBOX_LAYER_ID)) {
+      m.addLayer({
+        id: ROUTE_HITBOX_LAYER_ID,
+        type: 'line',
+        source: ROUTE_SOURCE_ID,
+        filter: ['==', ['get', 'passIndex'], 0],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-width': hitlineWidth,
+          'line-opacity': 0, // invisible
+        },
       });
     }
-    if (!m.getLayer(ROUTE_INTERACT_LAYER_ID)) {
+
+    if (!m.getLayer(ROUTE_HITBOX_LAYER_ID_P2)) {
       m.addLayer({
-        id: ROUTE_INTERACT_LAYER_ID,
+        id: ROUTE_HITBOX_LAYER_ID_P2,
         type: 'line',
-        source: ROUTE_INTERACT_SOURCE_ID,
+        source: ROUTE_SOURCE_ID,
+        filter: ['==', ['get', 'passIndex'], 1],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
-          'line-width': 20,
+          'line-width': hitlineWidth,
+          'line-offset': 10,
           'line-opacity': 0,
         },
       });
@@ -638,18 +695,14 @@ function App() {
         initializeLayers(m);
         setMapReady(true);
 
-        // ── Route hover via invisible interact layer + queryRenderedFeatures ──
+        // ── Route hover via invisible hitboxes ──
         const handleRouteLeave = () => {
           setHoveredSegment(null);
           m.getCanvas().style.cursor = '';
         };
 
-        m.on('mousemove', ROUTE_INTERACT_LAYER_ID, (e) => {
-          // Query the actual per-segment layers to get scoring data
-          const features = m.queryRenderedFeatures(e.point, {
-            layers: [ROUTE_LAYER_ID, ROUTE_LAYER_ID_P2],
-          });
-          const props = features[0]?.properties;
+        const handleRouteHover = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
+          const props = e.features?.[0]?.properties;
           if (!props) {
             handleRouteLeave();
             return;
@@ -661,14 +714,18 @@ function App() {
               grade: props.grade,
               climbPenalty: props.climbPenalty,
               sufferRaw: props.sufferRaw,
-              totalScore: props.score,
+              totalScore: props.score ?? props.totalScore,
             },
             mousePos: e.point,
           });
           m.getCanvas().style.cursor = 'crosshair';
-        });
+        };
 
-        m.on('mouseleave', ROUTE_INTERACT_LAYER_ID, handleRouteLeave);
+        m.on('mousemove', ROUTE_HITBOX_LAYER_ID, handleRouteHover);
+        m.on('mousemove', ROUTE_HITBOX_LAYER_ID_P2, handleRouteHover);
+
+        m.on('mouseleave', ROUTE_HITBOX_LAYER_ID, handleRouteLeave);
+        m.on('mouseleave', ROUTE_HITBOX_LAYER_ID_P2, handleRouteLeave);
       });
 
       // ── Pan/zoom: re-fetch wind arrows for new viewport ─────────────────
@@ -745,19 +802,6 @@ function App() {
     if (!mapReady) return;
     if (terrainOn) enableTerrain(); else disableTerrain();
   }, [mapReady, terrainOn, enableTerrain, disableTerrain, mapStyle]);
-
-  // ── Update invisible interact source (full route LineString) ─────────────
-  useEffect(() => {
-    const m = map.current;
-    if (!m || !mapReady) return;
-    const src = m.getSource(ROUTE_INTERACT_SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
-    if (!src) return;
-    src.setData({
-      type: 'Feature',
-      properties: {},
-      geometry: { type: 'LineString', coordinates: routeCoords },
-    });
-  }, [mapReady, routeCoords]);
 
   // ── Elevation sampling (waits for DEM tiles to load) ─────────────────────
   useEffect(() => {
@@ -947,7 +991,15 @@ function App() {
   }
 
   return (
-    <>
+    <div style={{ position: 'relative', width: '100vw', height: '100vh', backgroundColor: '#0f0f19', pointerEvents: appReady ? 'auto' : 'none' }}>
+      {/* INITIAL LOADING SCREEN */}
+      {!hideLoadingScreen && (
+        <div className={`loading-screen ${appReady ? 'fade-out' : ''}`}>
+          <img src="/textlogo_white.png" alt="PreRide Logo" className="loading-logo" />
+        </div>
+      )}
+
+      {/* ERROR MESSAGE OVERLAY */}
       <div
         ref={mapContainer}
         style={{ width: '100%', height: '100%' }}
@@ -1015,7 +1067,17 @@ function App() {
           <span>Easier</span><span>Harder</span>
         </div>
       </div>
-    </>
+
+      {/* ONBOARDING OVERLAY */}
+      {appReady && showOnboarding && (
+        <OnboardingOverlay
+          onDismiss={() => {
+            setShowOnboarding(false);
+            localStorage.setItem('preride_onboarding_seen', 'true');
+          }}
+        />
+      )}
+    </div>
   );
 }
 
