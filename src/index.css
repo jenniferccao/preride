@@ -130,6 +130,17 @@ body,
   .legend-panel {
     display: none;
   }
+
+  .github-label {
+    display: none;
+  }
+
+  .github-link {
+    position: fixed !important;
+    bottom: 180px;
+    right: 16px;
+    left: auto;
+  }
 }
 
 .time-slider-header {
@@ -162,7 +173,6 @@ body,
   z-index: 9999;
   transition: opacity 0.5s ease;
   pointer-events: none;
-  /* Let the map be disabled from the container instead, or just let it block */
 }
 
 .loading-screen.fade-out {

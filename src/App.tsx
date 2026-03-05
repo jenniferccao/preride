@@ -43,8 +43,10 @@ function sampleRoutePoints(coords: number[][], n: number): { lat: number; lon: n
 }
 
 // ─── Arrow grid config ────────────────────────────────────────────────────
-const ARROW_COLS = 6;
-const ARROW_ROWS = 4;
+function getArrowGrid() {
+  const isMobile = window.innerWidth <= 768;
+  return isMobile ? { cols: 4, rows: 6 } : { cols: 6, rows: 4 };
+}
 const ARROW_CONCURRENCY = 3;
 
 
@@ -418,7 +420,8 @@ function App() {
     const bounds = m.getBounds();
     if (!bounds) return;
 
-    const pts = buildGridPoints(bounds, ARROW_COLS, ARROW_ROWS);
+    const { cols, rows } = getArrowGrid();
+    const pts = buildGridPoints(bounds, cols, rows);
     arrowGridRef.current = pts;
     const grid = arrowGridRef.current;
 
