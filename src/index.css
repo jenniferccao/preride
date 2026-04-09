@@ -49,7 +49,7 @@ body,
 
 .upload-panel {
   position: absolute;
-  bottom: 100px;
+  bottom: 72px;
   left: 24px;
   z-index: 20;
   display: flex;
