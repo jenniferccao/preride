@@ -7,7 +7,7 @@ import {
   loadArrowPoint, pooled, buildGridPoints, buildArrowsGeoJSON,
 } from './hooks/windArrows';
 import type { GridPoint } from './hooks/windArrows';
-import { sampleElevations } from './hooks/elevationCache';
+import { fetchElevations } from './utils/openMeteo';
 
 import TimeSlider from './components/TimeSlider';
 import RouteDebugPanel from './components/RouteDebugPanel';
@@ -826,29 +826,34 @@ function App() {
     if (terrainOn) enableTerrain(); else disableTerrain();
   }, [mapReady, terrainOn, enableTerrain, disableTerrain, mapStyle]);
 
-  // ── Elevation sampling (waits for DEM tiles to load) ─────────────────────
+  // ── Elevation sampling (async from Open-Meteo) ─────────────────────
   useEffect(() => {
     const m = map.current;
     if (!m || !mapReady || routeCoords.length < 2) return;
 
-    if (!m.getSource(DEM_SOURCE_ID)) {
-      try {
-        m.addSource(DEM_SOURCE_ID, {
-          type: 'raster-dem',
-          url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
-          tileSize: 512,
-          maxzoom: 14,
-        });
-      } catch (_) { /* already exists */ }
+    let cancelled = false;
+
+    // Ensure terrain is set if terrainOn is true (Mapbox requirement for 3D)
+    if (terrainOn) {
+      if (!m.getSource(DEM_SOURCE_ID)) {
+        try {
+          m.addSource(DEM_SOURCE_ID, {
+            type: 'raster-dem',
+            url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+            tileSize: 512,
+            maxzoom: 14,
+          });
+        } catch (_) { /* already exists */ }
+      }
+      if (!m.getTerrain()) {
+        m.setTerrain({ source: DEM_SOURCE_ID, exaggeration: 1 });
+      }
     }
 
-    if (!m.getTerrain()) {
-      m.setTerrain({ source: DEM_SOURCE_ID, exaggeration: 1 });
-    }
-
-    const doSample = () => {
-      const elevs = sampleElevations(m, routeCoords);
+    fetchElevations(routeCoords).then((elevs) => {
+      if (cancelled) return;
       cachedElevationsRef.current = elevs;
+
       const src = m.getSource(ROUTE_SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
       if (src) {
         // ── Compute total ascent ──────────────────────────────────────────
@@ -866,19 +871,15 @@ function App() {
           ),
         );
       }
-    };
-
-    if (m.loaded()) {
-      doSample();
-    } else {
-      m.once('idle', doSample);
-    }
+    }).catch(err => {
+      console.error("Failed to lazy load route elevations:", err);
+    });
 
     return () => {
-      m.off('idle', doSample);
+      cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, routeCoords, terrainOn, mapStyle]);
+  }, [mapReady, routeCoords, elevationOn, windOn, allData, hourIndex, samplePoints, terrainOn]);
 
   // ── Recolor route ─────────────────────────────────────────────────────────
   useEffect(() => {

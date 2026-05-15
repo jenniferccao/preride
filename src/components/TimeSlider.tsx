@@ -80,10 +80,10 @@ export default function DateTimeControl({ date, setDate, onCommitDate, hourlyDat
                             borderRadius: '6px',
                             color: '#e2e8f0',
                             fontFamily: 'inherit',
-                            fontSize: '13px',
+                            fontSize: 'clamp(11px, 2vw, 13px)',
                             fontWeight: 600,
                             padding: '4px 8px 4px 28px', // Extra left padding for icon
-                            width: '95px', // slightly smaller width to fit better
+                            width: 'clamp(80px, 20vw, 95px)',
                             textAlign: 'center',
                             display: 'block',
                             letterSpacing: '-0.02em',
